@@ -1,6 +1,6 @@
 // Service worker: guarda la app para que funcione sin conexión.
 // Sube la versión cada vez que cambies archivos para que el móvil descargue la nueva.
-const VERSION = 'bridge-v2';
+const VERSION = 'bridge-v3';
 const FILES = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
   './js/app.js', './js/store.js', './js/engine.js', './js/lesson.js', './js/speech.js',

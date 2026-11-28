@@ -6,7 +6,7 @@ import { GRAMMAR } from './content/grammar.js';
 import { READING } from './content/reading.js';
 import { get, save, today, SKILLS } from './store.js';
 import { shuffle, tiles } from './text.js';
-import { UOE1, UOE2, UOE3, UOE4, LISTEN, SPEAK_QUESTIONS, PARTS } from './content/exam.js';
+import { UOE1, UOE2, UOE3, UOE4, LISTEN, SPEAK_QUESTIONS, NOTICES, PARTS, partInfo } from './content/exam.js';
 import { currentExam, updatePart, weightedPart, ensureParts } from './readiness.js';
 
 // ---------- Nivel (modelo tipo Elo / Rasch simplificado) ----------
@@ -395,8 +395,14 @@ function pickFresh(pool, n, statId = (x) => x.id) {
 const CLOZE_POOL = { uoe1: UOE1, uoe2: UOE2, uoe3: UOE3 };
 const CLOZE_MODE = { uoe1: 'mc', uoe2: 'open', uoe3: 'wf' };
 
+function badgeOf(part) {
+  const i = partInfo(part, currentExam());
+  return `${i.name} · ${i.short}`;
+}
+
 function clozeExercise(part, gapsToAsk) {
   const exam = currentExam();
+  if (!part || !CLOZE_POOL[part]) return null;
   const pool = CLOZE_POOL[part].filter((t) => t.exam === exam.id);
   const s = get();
   // El texto con más huecos sin ver o fallados
@@ -412,12 +418,18 @@ function clozeExercise(part, gapsToAsk) {
     active = shuffle(pref.length >= gapsToAsk ? pref : active).slice(0, gapsToAsk).sort((a, b) => a - b);
   }
   return { kind: 'cloze', mode: CLOZE_MODE[part], part, skill: PARTS[part].skill, lvl: t.lvl,
-    itemId: t.id, title: t.title, text: t.text, gaps: t.gaps, active, badge: `${PARTS[part].name} · ${PARTS[part].short}` };
+    itemId: t.id, title: t.title, text: t.text, gaps: t.gaps, active, badge: badgeOf(part) };
 }
 
 export function kwtExercise(k) {
   return { kind: 'kwt', part: 'uoe4', skill: 'grammar', lvl: k.lvl, itemId: k.id, ...k,
-    badge: `${PARTS.uoe4.name} · ${PARTS.uoe4.short}`, solution: `${k.before} ${k.answers[0]} ${k.after}` };
+    badge: badgeOf('uoe4'), solution: `${k.before} ${k.answers[0]} ${k.after}` };
+}
+
+function noticeExercise(n) {
+  return { kind: 'choice', part: 'notices', skill: 'reading', lvl: n.lvl, itemId: n.id, badge: badgeOf('notices'),
+    prompt: `¿Qué dice este texto?<div class="notice en">${n.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/\n/g, '<br>')}</div>`,
+    ...choice(n.options[0], n.options.slice(1)), solution: n.options[0] };
 }
 
 function examListenExercise(l) {
@@ -434,7 +446,7 @@ function speakFreeExercise(q) {
 
 function examReading() {
   const exam = currentExam();
-  const pool = READING.filter((r) => r.lvl >= exam.lvl - 1);
+  const pool = READING.filter((r) => r.lvl >= exam.lvl - 1 && r.lvl <= exam.lvl);
   const [r] = pickFresh(pool, 1);
   return r ? { ...readingExercise(r), part: 'read', lvl: Math.max(r.lvl, exam.lvl - 0.5) } : null;
 }
@@ -450,9 +462,13 @@ function buildExamDaily() {
   const fresh = newWords(1);
   const out = [...fresh.map((w) => vocabExercise(w, true)), ...due.map((w) => vocabExercise(w, false))];
 
+  const exam = currentExam();
   const cloze = clozeExercise(weightedPart(['uoe1', 'uoe2', 'uoe3']), long ? 4 : 3);
   if (cloze) out.push(cloze);
-  const kwts = pickFresh(forExam(UOE4), long ? 2 : 1).map(kwtExercise);
+  // B2/C1: transformaciones. A2/B1: avisos y mensajes cortos (Reading 1)
+  const kwts = exam.parts.uoe4
+    ? pickFresh(forExam(UOE4), long ? 2 : 1).map(kwtExercise)
+    : pickFresh(forExam(NOTICES), long ? 2 : 1).map(noticeExercise);
   out.push(kwts[0]);
   out.push(...pickFresh(forExam(LISTEN), long ? 2 : 1).map(examListenExercise));
   if (long) { const r = examReading(); if (r) out.push(r); }
@@ -461,8 +477,9 @@ function buildExamDaily() {
   out.push(...pickFresh(forExam(SPEAK_QUESTIONS), 1).map(speakFreeExercise));
   if (size >= 15) {
     // Refuerzo extra en la parte que más nota te puede dar
-    const extra = weightedPart(['uoe1', 'uoe2', 'uoe3', 'uoe4', 'listen']);
+    const extra = weightedPart(['uoe1', 'uoe2', 'uoe3', 'uoe4', 'notices', 'listen']);
     if (extra === 'uoe4') out.push(...pickFresh(forExam(UOE4), 2).map(kwtExercise));
+    else if (extra === 'notices') out.push(...pickFresh(forExam(NOTICES), 2).map(noticeExercise));
     else if (extra === 'listen') out.push(...pickFresh(forExam(LISTEN), 2).map(examListenExercise));
     else { const c = clozeExercise(extra, 4); if (c) out.push(c); }
     out.push(...sentenceExercises('speaking', 1, new Set()));
@@ -474,11 +491,12 @@ export function buildPartLesson(part) {
   ensureParts();
   if (CLOZE_POOL[part]) return [clozeExercise(part)].filter(Boolean);
   if (part === 'uoe4') return pickFresh(forExam(UOE4), 6).map(kwtExercise);
+  if (part === 'notices') return pickFresh(forExam(NOTICES), 6).map(noticeExercise);
   if (part === 'listen') return pickFresh(forExam(LISTEN), 6).map(examListenExercise);
   if (part === 'speak') return [...pickFresh(forExam(SPEAK_QUESTIONS), 3).map(speakFreeExercise), ...sentenceExercises('speaking', 2, new Set())];
   if (part === 'read') {
     const a = examReading();
-    const rest = READING.filter((r) => r.id !== a?.itemId && r.lvl >= currentExam().lvl - 1);
+    const rest = READING.filter((r) => r.id !== a?.itemId && r.lvl >= currentExam().lvl - 1 && r.lvl <= currentExam().lvl);
     const [b] = pickFresh(rest, 1);
     return [a, b && { ...readingExercise(b), part: 'read', lvl: Math.max(b.lvl, currentExam().lvl - 0.5) }].filter(Boolean);
   }

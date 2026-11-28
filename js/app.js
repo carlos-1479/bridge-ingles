@@ -10,13 +10,15 @@ import { speak, canListen, englishVoices, canSpeak } from './speech.js';
 import { icon } from './icons.js';
 import { escapeHtml } from './text.js';
 import * as rd from './readiness.js';
-import { EXAMS, PARTS, WRITING, WRITING_CHECKLIST } from './content/exam.js';
+import { EXAMS, partInfo, WRITING, WRITING_CHECKLIST, WRITING_CHECKLIST_A2 } from './content/exam.js';
 
 const root = document.getElementById('app');
 const $ = (sel, el = root) => el.querySelector(sel);
 const $$ = (sel, el = root) => [...el.querySelectorAll(sel)];
 
 const GOALS = {
+  a2key: { label: 'A2 Key (Cambridge)', desc: 'Primer certificado: inglés básico para el día a día', icon: 'target', target: 2, exam: true },
+  b1prelim: { label: 'B1 Preliminary (Cambridge)', desc: 'Inglés intermedio: desenvolverte con soltura', icon: 'target', target: 3, exam: true },
   b2first: { label: 'B2 First (Cambridge)', desc: 'Prepararme el examen con su formato y saber cómo voy', icon: 'target', target: 4, exam: true },
   c1adv: { label: 'C1 Advanced (Cambridge)', desc: 'Prepararme el C1 con su formato y saber cómo voy', icon: 'target', target: 5, exam: true },
   work: { label: 'Inglés para trabajar', desc: 'Entender ofertas, entrevistas, reuniones y emails', icon: 'briefcase', target: 4 },
@@ -554,7 +556,7 @@ const screens = {
       shell('exam', `
         <h1 class="title">Preparar un examen</h1>
         <p class="muted">Elige tu examen y la app entrenará cada parte con su formato real y te dirá cómo de preparado estás.</p>
-        <div class="choices">${['b2first', 'c1adv'].map((k) => `
+        <div class="choices">${['a2key', 'b1prelim', 'b2first', 'c1adv'].map((k) => `
           <button class="choice-card" data-pick="${k}"><span class="cc-icon">${icon('target')}</span>
           <span><b>${GOALS[k].label}</b><small>${GOALS[k].desc}</small></span></button>`).join('')}</div>`);
       $$('[data-pick]').forEach((b) => b.addEventListener('click', () => {
@@ -645,7 +647,7 @@ const screens = {
         <section class="card" id="w-check" hidden>
           <h3>Revisa tu texto</h3>
           <p class="muted small">Sin IA no puedo corregirlo, pero sí ayudarte a revisarlo como lo haría un examinador. Sé honesto: es para ti.</p>
-          ${WRITING_CHECKLIST.map((c, i) => `<label class="check-row"><input type="checkbox" data-c="${i}"><span>${c}</span></label>`).join('')}
+          ${(exam.lvl <= 2 ? WRITING_CHECKLIST_A2 : WRITING_CHECKLIST).map((c, i) => `<label class="check-row"><input type="checkbox" data-c="${i}"><span>${c}</span></label>`).join('')}
           <button class="btn primary block" data-save>Guardar evaluación</button>
         </section>
       </div>`;
@@ -667,7 +669,7 @@ const screens = {
       const n = count();
       const checks = $$('[data-c]').filter((b) => b.checked).length;
       const inRange = n >= task.min && n <= task.max ? 1 : 0;
-      const score = (checks + inRange) / (WRITING_CHECKLIST.length + 1);
+      const score = (checks + inRange) / ((exam.lvl <= 2 ? WRITING_CHECKLIST_A2 : WRITING_CHECKLIST).length + 1);
       // Cuenta como varias respuestas: una redacción es mucho trabajo
       for (let i = 0; i < 3; i++) rd.updatePart('write', exam.lvl, score >= 0.7);
       rd.saveWriting({ taskId: task.id, type: task.type, text: ta.value, words: n, score, date: store.today() });
@@ -741,7 +743,7 @@ function practicePart(part) {
   if (!ex.length) return toast('Aún no hay ejercicios de esta parte');
   tab = 'exam';
   runLesson(root, ex, {
-    title: `${PARTS[part].name} · ${PARTS[part].short}`,
+    title: (({ name, short }) => `${name} · ${short}`)(partInfo(part, rd.currentExam())),
     onExit: () => go('exam'),
     onFinish: (res) => screens.result(res, () => go('exam')),
   });

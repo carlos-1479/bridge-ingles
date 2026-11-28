@@ -13,7 +13,7 @@ Abre http://localhost:5173
 ## Estructura
 
 - `js/content/` → contenido: vocabulario, frases, gramática, textos de reading, test de nivel y glosario para analizar ofertas de trabajo. Para añadir material basta con añadir líneas a estos archivos.
-- `js/content/exam.js` → ejercicios con formato B2 First / C1 Advanced (Use of English 1–4, listening, speaking part 1, writing) y escalas de nota. Material original, no oficial.
+- `js/content/exam.js` → ejercicios con formato A2 Key, B1 Preliminary, B2 First y C1 Advanced (avisos, Use of English 1–4, listening, speaking, writing) y escalas de nota. Material original, no oficial.
 - `js/readiness.js` → nivel por parte del examen, nota estimada en escala Cambridge, prioridades e informe para el profesor.
 - `js/engine.js` → motor adaptativo: nivel por destreza (modelo tipo Elo), selección de ejercicios según nivel/objetivo/intereses y repaso espaciado (Leitner).
 - `js/analyzer.js` → convierte un texto pegado (oferta de LinkedIn, email…) en glosario y ejercicios.
