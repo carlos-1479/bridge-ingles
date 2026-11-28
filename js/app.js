@@ -9,20 +9,21 @@ import { renderAnnotated, uniqueTerms, buildTextLesson } from './analyzer.js';
 import { speak, canListen, englishVoices, canSpeak } from './speech.js';
 import { icon } from './icons.js';
 import { escapeHtml } from './text.js';
+import * as rd from './readiness.js';
+import { EXAMS, PARTS, WRITING, WRITING_CHECKLIST } from './content/exam.js';
 
 const root = document.getElementById('app');
 const $ = (sel, el = root) => el.querySelector(sel);
 const $$ = (sel, el = root) => [...el.querySelectorAll(sel)];
 
 const GOALS = {
-  b2: { label: 'Sacarme el B2', desc: 'Preparar el examen oficial (Cambridge, EOI, Aptis…)', icon: 'target', target: 4 },
+  b2first: { label: 'B2 First (Cambridge)', desc: 'Prepararme el examen con su formato y saber cómo voy', icon: 'target', target: 4, exam: true },
+  c1adv: { label: 'C1 Advanced (Cambridge)', desc: 'Prepararme el C1 con su formato y saber cómo voy', icon: 'target', target: 5, exam: true },
   work: { label: 'Inglés para trabajar', desc: 'Entender ofertas, entrevistas, reuniones y emails', icon: 'briefcase', target: 4 },
-  travel: { label: 'Viajar y conversar', desc: 'Desenvolverme hablando en el día a día', icon: 'chat', target: 3 },
   general: { label: 'Mejorar en general', desc: 'Un poco de todo, a mi ritmo', icon: 'book', target: 4 },
 };
 const INTERESTS = {
-  music: 'Música y canciones', jobs: 'Ofertas de empleo y LinkedIn', tech: 'Tecnología',
-  travel: 'Viajes', daily: 'Vida diaria',
+  jobs: 'Ofertas de empleo y LinkedIn', tech: 'Tecnología', travel: 'Viajes', daily: 'Vida diaria',
 };
 const SKILL_ICON = { vocab: 'cards', grammar: 'puzzle', reading: 'book', listening: 'headphones', speaking: 'mic' };
 const SKILL_DESC = {
@@ -46,7 +47,7 @@ function shell(active, html) {
   root.innerHTML = `
     <div class="screen">${html}</div>
     <nav class="tabbar">
-      ${[['home', 'Inicio', 'home'], ['practice', 'Practicar', 'dumbbell'], ['texts', 'Mis textos', 'doc'], ['profile', 'Perfil', 'user']]
+      ${[['home', 'Inicio', 'home'], ['exam', 'Examen', 'target'], ['practice', 'Practicar', 'dumbbell'], ['profile', 'Perfil', 'user']]
         .map(([k, l, ic]) => `<button class="tab ${k === active ? 'active' : ''}" data-tab="${k}">${icon(ic)}<span>${l}</span></button>`).join('')}
     </nav>`;
   $$('[data-tab]').forEach((b) => b.addEventListener('click', () => go(b.dataset.tab)));
@@ -169,6 +170,9 @@ const screens = {
         <p class="muted">Elige todo lo que quieras. Los ejercicios saldrán más de estos temas.</p>
         <div class="chips">${Object.entries(INTERESTS).map(([k, l]) =>
           `<button class="chip ${sel.has(k) ? 'selected' : ''}" data-k="${k}">${l}</button>`).join('')}</div>
+        ${GOALS[draft.goal]?.exam ? `<h2 class="mt">¿Cuándo es tu examen?</h2>
+        <input type="date" class="field" id="exam-date" value="${draft.examDate || ''}">
+        <p class="muted small">Si aún no lo sabes, déjalo vacío. Puedes cambiarlo luego.</p>` : ''}
         <h2 class="mt">¿Cuánto tiempo al día?</h2>
         <div class="chips">${[5, 10, 15, 20].map((m) =>
           `<button class="chip ${(draft.minutes || 10) === m ? 'selected' : ''}" data-min="${m}">${m} min</button>`).join('')}</div>
@@ -183,7 +187,7 @@ const screens = {
         b.classList.add('selected');
         minutes = +b.dataset.min;
       }));
-      $('[data-go]').addEventListener('click', () => next({ interests: [...sel], minutes }));
+      $('[data-go]').addEventListener('click', () => next({ interests: [...sel], minutes, examDate: $('#exam-date')?.value || null }));
     } else if (step === 4) {
       frame(`
         <h2>¿Qué nivel tienes?</h2>
@@ -255,11 +259,11 @@ const screens = {
         <span><b>${due} palabra${due > 1 ? 's' : ''} por repasar</b><small>El repaso espaciado fija lo que aprendes</small></span>
       </button>` : ''}
 
-      <section class="card">
+      ${examCard() || `<section class="card">
         <div class="card-head"><h3>${icon(goal.icon)} ${goal.label}</h3><span class="pill">${levelLabel(theta)} → ${LEVELS[goal.target - 1]}</span></div>
         ${levelBar(theta, goal.target)}
         <p class="muted small">${goalMessage(theta, goal.target)}</p>
-      </section>
+      </section>`}
 
       <section class="card">
         <h3>Tus destrezas</h3>
@@ -278,9 +282,10 @@ const screens = {
       </section>
 
       <button class="card row-card" data-texts>
-        <span class="cc-icon">${icon('music')}</span>
-        <span><b>Aprende con lo que te gusta</b><small>Pega una canción o una oferta de LinkedIn y conviértela en lección</small></span>
+        <span class="cc-icon">${icon('briefcase')}</span>
+        <span><b>Entiende ofertas de trabajo</b><small>Pega una oferta de LinkedIn y conviértela en lección</small></span>
       </button>`);
+    $('[data-exam]')?.addEventListener('click', () => go('exam'));
     $('[data-daily]').addEventListener('click', () => startLesson(engine.buildDailyLesson(), 'Lección diaria'));
     $('[data-review]')?.addEventListener('click', () => startLesson(engine.buildReviewLesson(), 'Repaso'));
     $('[data-texts]').addEventListener('click', () => go('texts'));
@@ -308,6 +313,10 @@ const screens = {
           <span class="cc-icon warm">${icon('cards')}</span>
           <span class="grow"><b>Repasar palabras</b><small>${due ? `${due} pendientes hoy` : 'Nada pendiente hoy 🎉'} · ${engine.learnedCount()} aprendidas</small></span>
         </button>
+        <button class="card row-card" data-texts>
+          <span class="cc-icon">${icon('briefcase')}</span>
+          <span class="grow"><b>Ofertas de trabajo y textos</b><small>Pega una oferta o un email y practica con él</small></span>
+        </button>
         <button class="card row-card" data-mistakes ${mistakes ? '' : 'disabled'}>
           <span class="cc-icon bad">${icon('retry')}</span>
           <span class="grow"><b>Repasar mis errores</b><small>${mistakes ? `${mistakes} ejercicios fallados` : 'Sin errores pendientes'}</small></span>
@@ -318,6 +327,7 @@ const screens = {
       startLesson(engine.buildSkillLesson(b.dataset.skill), SKILL_LABEL[b.dataset.skill])));
     $('[data-review]').addEventListener('click', () => startLesson(engine.buildReviewLesson(), 'Repaso'));
     $('[data-mistakes]').addEventListener('click', () => startLesson(engine.buildMistakesLesson(), 'Errores'));
+    $('[data-texts]').addEventListener('click', () => go('texts'));
   },
 
   // ----- Mis textos -----
@@ -326,15 +336,14 @@ const screens = {
     const list = [...s.texts].sort((a, b) => b.createdAt - a.createdAt);
     const item = (t, sample) => `
       <button class="card row-card" data-open="${t.id}">
-        <span class="cc-icon">${icon(t.type === 'song' ? 'music' : t.type === 'job' ? 'briefcase' : 'doc')}</span>
+        <span class="cc-icon">${icon(t.type === 'job' ? 'briefcase' : 'doc')}</span>
         <span class="grow"><b>${escapeHtml(t.title)}</b><small>${uniqueTerms(t.content).length} expresiones detectadas${sample ? ' · ejemplo' : ''}</small></span>
       </button>`;
-    shell('texts', `
-      <h1 class="title">Mis textos</h1>
+    shell('practice', `
+      <header class="subbar"><button class="icon-btn" data-back>${icon('back')}</button><h2>Ofertas y textos</h2><span></span></header>
       <p class="muted">Pega cualquier texto en inglés y la app te lo explica y crea ejercicios con él: lectura con traducción al tocar, dictados, pronunciación y repaso de las expresiones.</p>
       <div class="add-row">
         <button class="btn soft" data-new="job">${icon('briefcase')} Oferta de trabajo</button>
-        <button class="btn soft" data-new="song">${icon('music')} Canción</button>
         <button class="btn soft" data-new="other">${icon('doc')} Otro texto</button>
       </div>
       <div class="list">
@@ -342,6 +351,7 @@ const screens = {
         ${SAMPLE_TEXTS.map((t) => item(t, true)).join('')}
       </div>`);
     $$('[data-new]').forEach((b) => b.addEventListener('click', () => screens.editText(b.dataset.new)));
+    $('[data-back]').addEventListener('click', () => go('practice'));
     $$('[data-open]').forEach((b) => b.addEventListener('click', () => screens.text(b.dataset.open)));
   },
 
@@ -360,7 +370,6 @@ const screens = {
         <label class="lbl">Texto</label>
         <textarea class="field big" id="t-content" placeholder="${placeholders[type]}"></textarea>
         <button class="btn primary block" data-save disabled>Guardar y analizar</button>
-        ${type === 'song' ? '<p class="note">Las letras se guardan solo en tu móvil, para tu uso personal.</p>' : ''}
       </div>`;
     const ti = $('#t-title'), tc = $('#t-content'), b = $('[data-save]');
     const upd = () => { b.disabled = tc.value.trim().split(/\s+/).length < 5; };
@@ -392,7 +401,6 @@ const screens = {
         <div class="text-actions">
           <button class="btn primary" data-practice>${icon('dumbbell')} Practicar</button>
           <button class="btn soft" data-listen>${icon('play')} Escuchar</button>
-          ${t.type === 'song' ? `<a class="btn soft" target="_blank" rel="noopener" href="https://www.youtube.com/results?search_query=${encodeURIComponent(t.title.replace(/^Ejemplo · /, ''))}">${icon('music')} YouTube</a>` : ''}
         </div>
         <p class="muted small">Toca cualquier palabra para escucharla o guardarla. Las <span class="term demo">expresiones resaltadas</span> tienen traducción.</p>
         <article class="annotated en">${renderAnnotated(t.content)}</article>
@@ -474,6 +482,8 @@ const screens = {
         <h3>Objetivo y preferencias</h3>
         <label class="lbl">Objetivo</label>
         <select class="field" id="goal">${Object.entries(GOALS).map(([k, g]) => `<option value="${k}" ${p.goal === k ? 'selected' : ''}>${g.label}</option>`).join('')}</select>
+        ${GOALS[p.goal]?.exam ? `<label class="lbl">Fecha del examen</label>
+        <input type="date" class="field" id="exam-date" value="${p.examDate || ''}">` : ''}
         <label class="lbl">Minutos al día</label>
         <select class="field" id="minutes">${[5, 10, 15, 20].map((m) => `<option ${p.minutes === m ? 'selected' : ''}>${m}</option>`).join('')}</select>
         <label class="lbl">Intereses</label>
@@ -507,7 +517,8 @@ const screens = {
         <p class="muted small"><b>iPhone (Safari):</b> botón Compartir → «Añadir a pantalla de inicio».<br>
         <b>Android (Chrome):</b> menú ⋮ → «Instalar aplicación».</p>
       </section>`);
-    $('#goal').addEventListener('change', (e) => { p.goal = e.target.value; save(); toast('Objetivo actualizado'); });
+    $('#goal').addEventListener('change', (e) => { p.goal = e.target.value; save(); toast('Objetivo actualizado'); go('profile'); });
+    $('#exam-date')?.addEventListener('change', (e) => { p.examDate = e.target.value || null; save(); toast('Fecha guardada'); });
     $('#minutes').addEventListener('change', (e) => { p.minutes = +e.target.value; save(); toast('Guardado'); });
     $$('[data-int]').forEach((b) => b.addEventListener('click', () => {
       const k = b.dataset.int;
@@ -533,6 +544,139 @@ const screens = {
     });
     $('[data-reset]').addEventListener('click', () => {
       if (confirm('Se borrará todo tu progreso de este dispositivo. ¿Seguro?')) { store.reset(); boot(); }
+    });
+  },
+
+  // ----- Examen: informe de preparación -----
+  exam() {
+    const exam = rd.currentExam();
+    if (!exam) {
+      shell('exam', `
+        <h1 class="title">Preparar un examen</h1>
+        <p class="muted">Elige tu examen y la app entrenará cada parte con su formato real y te dirá cómo de preparado estás.</p>
+        <div class="choices">${['b2first', 'c1adv'].map((k) => `
+          <button class="choice-card" data-pick="${k}"><span class="cc-icon">${icon('target')}</span>
+          <span><b>${GOALS[k].label}</b><small>${GOALS[k].desc}</small></span></button>`).join('')}</div>`);
+      $$('[data-pick]').forEach((b) => b.addEventListener('click', () => {
+        get().profile.goal = b.dataset.pick;
+        save();
+        go('exam');
+      }));
+      return;
+    }
+    const r = rd.report();
+    const p = get().profile;
+    const pct = (x) => Math.round(x * 100);
+    const partRow = (pt) => `
+      <button class="part-row" data-part="${pt.id}">
+        <span class="grow"><b>${pt.name}</b><small>${pt.short}${pt.n < 5 ? ' · pocas respuestas' : ''}</small>
+          <span class="mini ${pt.pct >= 0.6 ? 'good' : pt.pct >= 0.45 ? 'mid' : 'low'}"><i style="width:${pct(pt.pct)}%"></i></span></span>
+        <span class="part-pct">${pct(pt.pct)}%</span>
+      </button>`;
+    shell('exam', `
+      <div class="card-head"><h1 class="title">${exam.name}</h1>
+        <span class="pill">${r.days == null ? 'Sin fecha' : r.days > 0 ? `Faltan ${r.days} días` : r.days === 0 ? '¡Es hoy!' : 'Examen pasado'}</span></div>
+      ${scoreCard(r, true)}
+      ${!r.reliable ? `<p class="note">Estimación inicial: aún hay pocas respuestas (${r.totalAnswers}). Se vuelve fiable a partir de ~60 respuestas repartidas entre las partes.</p>` : ''}
+
+      ${r.priorities.length ? `<section class="card">
+        <h3>${icon('target')} Dónde poner el foco</h3>
+        ${r.priorities.map((pt, i) => `
+          <div class="prio">
+            <div class="prio-head"><span class="prio-n">${i + 1}</span><b>${pt.name} · ${pt.short}</b><span class="part-pct">${pct(pt.pct)}%</span></div>
+            <p class="muted small">${pt.tip}</p>
+            <button class="btn soft" data-part="${pt.id}">Practicar ahora</button>
+          </div>`).join('')}
+        <p class="muted small">Ordenado por lo que más puede subir tu nota: combina tu nivel en cada parte con cuántos puntos vale en el examen.</p>
+      </section>` : ''}
+
+      ${r.untested.length ? `<section class="card">
+        <h3>${icon('retry')} Aún sin evaluar</h3>
+        <p class="muted small">De estas partes todavía no tengo datos suficientes; su nota sale de tu nivel general. Haz un ejercicio de cada una para afinar el informe.</p>
+        <div class="chips">${r.untested.map((pt) => `<button class="chip" data-part="${pt.id}">${pt.name}</button>`).join('')}</div>
+      </section>` : ''}
+
+      ${r.strong.length ? `<section class="card">
+        <h3>${icon('check')} Lo tienes controlado</h3>
+        <p class="muted small">${r.strong.map((x) => x.name).join(', ')}. Basta con repasarlo de vez en cuando: dedica ese tiempo a tus prioridades.</p>
+      </section>` : ''}
+
+      ${r.papers.map((pp) => `
+        <section class="card">
+          <div class="card-head"><h3>${pp.name}</h3><span class="pill ${pp.score >= exam.pass ? 'ok' : ''}">${pp.score}</span></div>
+          ${pp.parts.map(partRow).join('')}
+        </section>`).join('')}
+
+      <section class="card">
+        <h3>${icon('user')} Para tu profesor</h3>
+        <p class="muted small">Envía este informe a tu profesor para que sepa en qué insistir en clase.</p>
+        <button class="btn soft" data-share>Compartir informe</button>
+      </section>
+      <p class="muted small center">La nota es una estimación orientativa calculada con tus respuestas en la app, no una nota oficial. Writing y Speaking se basan en tu autoevaluación.</p>
+      ${!p.examDate ? '<p class="muted small center">Añade la fecha de tu examen en Perfil para ver la cuenta atrás.</p>' : ''}`);
+    $$('[data-part]').forEach((b) => b.addEventListener('click', () => practicePart(b.dataset.part)));
+    $('[data-share]').addEventListener('click', async () => {
+      const text = rd.reportText();
+      try {
+        if (navigator.share) await navigator.share({ title: `Informe ${exam.name}`, text });
+        else { await navigator.clipboard.writeText(text); toast('Informe copiado'); }
+      } catch (_) { /* cancelado */ }
+    });
+  },
+
+  // ----- Writing con autoevaluación -----
+  writing() {
+    const exam = rd.currentExam();
+    const s = get();
+    const tasks = WRITING.filter((w) => w.exam === exam.id);
+    const done = (s.writings || []).map((w) => w.taskId);
+    const task = tasks.find((t) => !done.includes(t.id)) || tasks[(s.writings || []).length % tasks.length];
+    const draftKey = 'draft_' + task.id;
+    root.innerHTML = `
+      <div class="screen">
+        <header class="subbar"><button class="icon-btn" data-back>${icon('back')}</button><h2>Writing · ${task.type}</h2><span></span></header>
+        <section class="card"><p class="task en">${escapeHtml(task.task).replace(/\n/g, '<br>')}</p>
+          <p class="muted small">Escribe entre ${task.min} y ${task.max} palabras.</p></section>
+        <details class="card"><summary><b>Frases útiles</b></summary>
+          <ul class="phrases en">${task.phrases.map((x) => `<li>${escapeHtml(x)}</li>`).join('')}</ul></details>
+        <textarea class="field big en" id="w-text" lang="en" spellcheck="false" placeholder="Escribe aquí tu ${task.type.toLowerCase()} en inglés…">${escapeHtml(s.settings[draftKey] || '')}</textarea>
+        <p class="wcount" id="w-count"></p>
+        <button class="btn primary block" data-done disabled>He terminado: revisar</button>
+        <section class="card" id="w-check" hidden>
+          <h3>Revisa tu texto</h3>
+          <p class="muted small">Sin IA no puedo corregirlo, pero sí ayudarte a revisarlo como lo haría un examinador. Sé honesto: es para ti.</p>
+          ${WRITING_CHECKLIST.map((c, i) => `<label class="check-row"><input type="checkbox" data-c="${i}"><span>${c}</span></label>`).join('')}
+          <button class="btn primary block" data-save>Guardar evaluación</button>
+        </section>
+      </div>`;
+    const ta = $('#w-text'), wc = $('#w-count');
+    const count = () => ta.value.trim().split(/\s+/).filter(Boolean).length;
+    const upd = () => {
+      const n = count();
+      wc.textContent = `${n} palabras`;
+      wc.className = 'wcount ' + (n >= task.min && n <= task.max ? 'ok' : n > task.max ? 'bad' : '');
+      $('[data-done]').disabled = n < 40;
+      s.settings[draftKey] = ta.value;
+      save();
+    };
+    ta.addEventListener('input', upd);
+    upd();
+    $('[data-back]').addEventListener('click', () => go('exam'));
+    $('[data-done]').addEventListener('click', () => { $('#w-check').hidden = false; $('#w-check').scrollIntoView({ behavior: 'smooth' }); });
+    $('[data-save]').addEventListener('click', () => {
+      const n = count();
+      const checks = $$('[data-c]').filter((b) => b.checked).length;
+      const inRange = n >= task.min && n <= task.max ? 1 : 0;
+      const score = (checks + inRange) / (WRITING_CHECKLIST.length + 1);
+      // Cuenta como varias respuestas: una redacción es mucho trabajo
+      for (let i = 0; i < 3; i++) rd.updatePart('write', exam.lvl, score >= 0.7);
+      rd.saveWriting({ taskId: task.id, type: task.type, text: ta.value, words: n, score, date: store.today() });
+      delete s.settings[draftKey];
+      store.addXp(15);
+      store.completeLesson();
+      save();
+      toast(`Guardado · ${Math.round(score * 100)}% de los criterios`);
+      go('exam');
     });
   },
 
@@ -564,10 +708,49 @@ const screens = {
   },
 };
 
+// ---------- Examen: tarjetas y práctica por partes ----------
+function scoreCard(r, big = false) {
+  const [min, max] = [r.exam.scale[0][1], r.exam.scale[r.exam.scale.length - 1][1]];
+  const pos = (v) => Math.max(0, Math.min(100, ((v - min) / (max - min)) * 100));
+  const gap = r.exam.pass - r.overall;
+  return `<div class="score ${big ? 'big' : ''}">
+    <div class="score-top"><div><span class="score-n">${r.overall}</span><span class="score-of">nota estimada</span></div>
+      <span class="pill ${r.passes ? 'ok' : 'warn'}">${r.grade}</span></div>
+    <div class="scorebar"><i style="width:${pos(r.overall)}%"></i><b style="left:${pos(r.exam.pass)}%" title="Aprobado"></b></div>
+    <div class="scorebar-labels"><span>${min}</span><span style="left:${pos(r.exam.pass)}%">Aprobado ${r.exam.pass}</span><span>${max}</span></div>
+    <p class="small ${r.passes ? 'okc' : ''}">${r.passes ? '¡Hoy aprobarías! Sigue consolidando para ir con margen.' : `Te faltan unos <b>${gap}</b> puntos para aprobar.`}</p>
+  </div>`;
+}
+
+function examCard() {
+  const r = rd.report();
+  if (!r) return '';
+  return `<button class="card exam-card" data-exam>
+    <div class="card-head"><h3>${icon('target')} ${r.exam.name}</h3>
+      <span class="pill">${r.days == null ? 'Ver informe' : r.days > 0 ? `Faltan ${r.days} días` : 'Ver informe'}</span></div>
+    ${scoreCard(r)}
+    <p class="muted small">${r.priorities.length
+      ? `Prioridad ahora: <b>${r.priorities.slice(0, 2).map((x) => x.name).join(' · ')}</b>`
+      : 'Haz tus lecciones diarias y detectaré dónde tienes que poner el foco.'}</p>
+  </button>`;
+}
+
+function practicePart(part) {
+  if (part === 'write') return screens.writing();
+  const ex = engine.buildPartLesson(part);
+  if (!ex.length) return toast('Aún no hay ejercicios de esta parte');
+  tab = 'exam';
+  runLesson(root, ex, {
+    title: `${PARTS[part].name} · ${PARTS[part].short}`,
+    onExit: () => go('exam'),
+    onFinish: (res) => screens.result(res, () => go('exam')),
+  });
+}
+
 // ---------- Ayudantes ----------
 function finishOnboarding(d) {
   const s = get();
-  s.profile = { name: d.name, goal: d.goal || 'general', interests: d.interests || [], minutes: d.minutes || 10, createdAt: Date.now() };
+  s.profile = { name: d.name, goal: d.goal || 'general', interests: d.interests || [], minutes: d.minutes || 10, examDate: d.examDate || null, createdAt: Date.now() };
   save();
 }
 
@@ -639,7 +822,16 @@ function wordSheet(word, es, source, key) {
 
 // ---------- Arranque ----------
 function boot() {
-  if (!get().profile) screens.onboarding(0);
+  const p = get().profile;
+  if (p) {
+    // Migración desde versiones anteriores
+    if (p.goal === 'b2') p.goal = 'b2first';
+    if (!GOALS[p.goal]) p.goal = 'general';
+    p.interests = (p.interests || []).filter((i) => INTERESTS[i]);
+    get().texts = get().texts.filter((t) => t.type !== 'song');
+    save();
+  }
+  if (!p) screens.onboarding(0);
   else go('home');
 }
 boot();

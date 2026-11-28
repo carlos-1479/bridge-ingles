@@ -4,6 +4,7 @@ import { checkTyped, normalize, speechScore, shuffle, escapeHtml } from './text.
 import { applyResult, applyMatchResult, addCustomWord } from './engine.js';
 import { get, addXp, recordAnswer, completeLesson, save, SKILLS } from './store.js';
 import { icon } from './icons.js';
+import { SPEAK_CHECKLIST, PARTS } from './content/exam.js';
 
 const XP_PER_OK = 3;
 
@@ -308,6 +309,169 @@ const renderers = {
       },
     };
   },
+  // Texto con huecos (Use of English 1, 2 y 3). Se responde hueco a hueco.
+  cloze(ex, el, setReady, submit) {
+    const correctOf = (g) => (ex.mode === 'mc' ? g.options[g.answer] : (g.answers || g)[0]);
+    const html = escapeHtml(ex.text).replace(/\{(\d+)\}/g, (_, n) => {
+      const i = +n - 1;
+      if (ex.active.includes(i)) return `<span class="gap" data-g="${i}">(${n})&nbsp;______</span>`;
+      return `<span class="gap-filled">${escapeHtml(correctOf(ex.gaps[i]))}</span>`;
+    });
+    el.innerHTML = `
+      <span class="badge">${escapeHtml(ex.badge)}</span>
+      <div class="cloze-text en"><b>${escapeHtml(ex.title)}</b><br>${html}</div>
+      <div class="cloze-ctrl"></div>`;
+    const ctrl = el.querySelector('.cloze-ctrl');
+    let q = 0, sel = null, input = null;
+    const show = () => {
+      const gi = ex.active[q];
+      const g = ex.gaps[gi];
+      el.querySelectorAll('.gap').forEach((x) => x.classList.toggle('current', +x.dataset.g === gi));
+      el.querySelector(`.gap[data-g="${gi}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      sel = null;
+      const head = `<p class="q-count">Hueco ${gi + 1} · ${q + 1} de ${ex.active.length}</p>`;
+      if (ex.mode === 'mc') {
+        const opts = shuffle(g.options);
+        ctrl.innerHTML = head + `<div class="options grid2">${opts.map((o) =>
+          `<button class="option" data-o="${escapeHtml(o)}"><span class="en">${escapeHtml(o)}</span></button>`).join('')}</div>`;
+        ctrl.querySelectorAll('.option').forEach((b) => b.addEventListener('click', () => {
+          ctrl.querySelectorAll('.option').forEach((x) => x.classList.remove('selected'));
+          b.classList.add('selected');
+          sel = b.dataset.o;
+          setReady(true);
+        }));
+      } else {
+        ctrl.innerHTML = head + `
+          ${ex.mode === 'wf' ? `<p class="stem">Palabra base: <b class="en">${escapeHtml(g.stem)}</b></p>` : '<p class="muted small">Escribe UNA sola palabra.</p>'}
+          <input class="answer-input one" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" lang="en" placeholder="Tu respuesta">`;
+        input = ctrl.querySelector('input');
+        input.addEventListener('input', () => setReady(input.value.trim().length > 0));
+        input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && input.value.trim()) { e.preventDefault(); submit(); } });
+        setTimeout(() => input.focus({ preventScroll: true }), 250);
+      }
+    };
+    show();
+    return {
+      check() {
+        const gi = ex.active[q];
+        const g = ex.gaps[gi];
+        const right = correctOf(g);
+        let given, ok;
+        if (ex.mode === 'mc') {
+          given = sel;
+          ok = sel === right;
+          ctrl.querySelectorAll('.option').forEach((b) => {
+            b.disabled = true;
+            if (b.dataset.o === right) b.classList.add('correct');
+            else if (b.dataset.o === sel) b.classList.add('wrong');
+          });
+        } else {
+          given = input.value.trim();
+          input.disabled = true;
+          // En el examen la ortografía cuenta: no se aceptan erratas
+          ok = (g.answers || g).some((a) => normalize(a) === normalize(given));
+          input.classList.add(ok ? 'correct' : 'wrong');
+        }
+        const span = el.querySelector(`.gap[data-g="${gi}"]`);
+        span.classList.remove('current');
+        span.classList.add(ok ? 'ok' : 'ko');
+        span.innerHTML = ok ? escapeHtml(right) : `<s>${escapeHtml(given || '—')}</s> ${escapeHtml(right)}`;
+        const alts = ex.mode !== 'mc' && (g.answers || g).length > 1 ? ` (también: ${(g.answers || g).slice(1).join(', ')})` : '';
+        return { ok, solution: right + alts, itemId: `${ex.itemId}#${gi}` };
+      },
+      next() {
+        q++;
+        if (q >= ex.active.length) return false;
+        show();
+        return true;
+      },
+      key(k) { ctrl.querySelectorAll('.option')[+k - 1]?.click(); },
+    };
+  },
+
+  // Key word transformation
+  kwt(ex, el, setReady, submit) {
+    el.innerHTML = `
+      <span class="badge">${escapeHtml(ex.badge)}</span>
+      <h2 class="prompt small">Completa la segunda frase para que signifique lo mismo que la primera. Usa la palabra clave sin cambiarla (2–5 palabras).</h2>
+      <div class="sentence en">${escapeHtml(ex.s1)}</div>
+      <div class="kwt-key">${escapeHtml(ex.key)}</div>
+      <div class="sentence en kwt-line">${escapeHtml(ex.before)} <input class="kwt-input" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" lang="en"> ${escapeHtml(ex.after)}</div>`;
+    const inp = el.querySelector('input');
+    inp.addEventListener('input', () => setReady(inp.value.trim().length > 0));
+    inp.addEventListener('keydown', (e) => { if (e.key === 'Enter' && inp.value.trim()) { e.preventDefault(); submit(); } });
+    setTimeout(() => inp.focus(), 300);
+    return {
+      check() {
+        inp.disabled = true;
+        const full = (mid) => normalize(`${ex.before} ${mid} ${ex.after}`);
+        const usesKey = normalize(inp.value).replace(/ /g, '').includes(normalize(ex.key).replace(/ /g, ''));
+        const ok = usesKey && ex.answers.some((a) => full(a) === full(inp.value));
+        inp.classList.add(ok ? 'correct' : 'wrong');
+        return { ok, detail: !usesKey ? `Tienes que usar la palabra clave: ${ex.key}` : '' };
+      },
+    };
+  },
+
+  // Speaking Part 1: respuesta libre + autoevaluación guiada
+  speakfree(ex, el, setReady) {
+    const supported = canListen();
+    el.innerHTML = `
+      <span class="badge">${escapeHtml(ex.badge)}</span>
+      <h2 class="prompt small">Responde en voz alta como en el examen (20–30 segundos):</h2>
+      <div class="speak-card">${audioButtons(ex.question)}<p class="sentence en">${escapeHtml(ex.question)}</p></div>
+      ${supported ? `<button class="mic" aria-label="Pulsa y responde">${icon('mic')}</button>
+        <p class="mic-status muted">Pulsa el micro y responde. Se para solo cuando dejas de hablar.</p>` : ''}
+      <div class="transcript" hidden></div>
+      <div class="checklist" ${supported ? 'hidden' : ''}>
+        <p class="q-count">Valora tu respuesta</p>
+        ${SPEAK_CHECKLIST.map((c, i) => `<label class="check-row"><input type="checkbox" data-c="${i}"><span>${c}</span></label>`).join('')}
+      </div>`;
+    wireAudio(el, ex.question);
+    setTimeout(() => speak(ex.question), 350);
+    const list = el.querySelector('.checklist');
+    const boxes = [...el.querySelectorAll('[data-c]')];
+    let said = '';
+    if (!supported) setReady(true);
+    if (supported) {
+      const mic = el.querySelector('.mic');
+      const status = el.querySelector('.mic-status');
+      const tr = el.querySelector('.transcript');
+      let on = false;
+      mic.addEventListener('click', async () => {
+        if (on) { listen.stop?.(); return; }
+        on = true;
+        mic.classList.add('on');
+        status.textContent = 'Te escucho… (pulsa para terminar)';
+        try {
+          const alts = await listen();
+          if (alts.length) {
+            said = (said ? said + ' ' : '') + alts[0];
+            const n = said.split(/\s+/).filter(Boolean).length;
+            tr.hidden = false;
+            tr.innerHTML = `<p class="q-count">He entendido (${n} palabras)</p><p class="en">“${escapeHtml(said)}”</p>
+              ${n < 15 ? '<p class="muted small">Respuesta corta: en el examen intenta desarrollar más. Puedes pulsar el micro para añadir.</p>' : ''}`;
+            if (n >= 15) boxes[2].checked = true;
+            list.hidden = false;
+            setReady(true);
+            status.textContent = 'Pulsa otra vez si quieres añadir algo';
+          } else status.textContent = 'No te he oído. Inténtalo otra vez.';
+        } catch (e) {
+          status.textContent = e.message === 'not-allowed' ? 'Necesito permiso para el micrófono.' : 'No he podido escucharte.';
+          list.hidden = false;
+          setReady(true);
+        } finally { on = false; mic.classList.remove('on'); }
+      });
+    }
+    return {
+      check() {
+        const n = boxes.filter((b) => b.checked).length;
+        boxes.forEach((b) => { b.disabled = true; });
+        el.querySelector('.mic')?.setAttribute('disabled', '');
+        return { ok: n >= 2, partialOk: true, detail: `Has cumplido ${n} de ${boxes.length} criterios. ${PARTS.speak.tip}` };
+      },
+    };
+  },
 };
 
 // ---------- Reproductor ----------
@@ -392,20 +556,20 @@ export function runLesson(root, exercises, { title = 'Lección', onExit, onFinis
     recordAnswer(r.ok);
     if (first) {
       // Los textos de "Mis textos" no tienen nivel: no mueven tu estimación de nivel
-      applyResult(ex, r.ok);
+      applyResult(ex, r.ok, { itemId: r.itemId, lvl: r.lvl });
       if (r.ok) { firstTry++; xp += XP_PER_OK; }
     } else if (r.ok) {
       xp += 1;
     }
     if (ex.termToSave && !r.ok) addCustomWord(ex.termToSave.key, ex.termToSave.es, textTitle);
     // Los fallos se repiten una vez al final (salvo textos largos, speaking y emparejar)
-    if (!r.ok && first && ['choice', 'type', 'order'].includes(ex.kind)) {
+    if (!r.ok && first && ['choice', 'type', 'order', 'kwt'].includes(ex.kind)) {
       queue.push({ ...ex, _retry: true, autoplay: ex.autoplay });
       retried.add(idx);
     }
     beep(r.ok || r.partialOk);
     const solution = r.solution || ex.solution;
-    const title = r.ok ? (r.typo ? '¡Casi perfecto!' : pickPraise()) : ex.kind === 'match' ? '¡Hecho!' : 'Solución correcta:';
+    const title = r.ok ? (r.typo ? '¡Casi perfecto!' : pickPraise()) : ex.kind === 'match' ? '¡Hecho!' : ex.kind === 'speakfree' ? 'Intenta desarrollar más la respuesta' : 'Solución correcta:';
     fb.innerHTML = `
       <div class="fb-title">${r.ok || r.partialOk ? icon('check') : icon('x')} ${title}</div>
       ${!r.ok && solution && ex.kind !== 'match' ? `<div class="fb-solution en">${escapeHtml(solution)}

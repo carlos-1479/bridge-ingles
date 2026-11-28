@@ -6,6 +6,8 @@ import { GRAMMAR } from './content/grammar.js';
 import { READING } from './content/reading.js';
 import { get, save, today, SKILLS } from './store.js';
 import { shuffle, tiles } from './text.js';
+import { UOE1, UOE2, UOE3, UOE4, LISTEN, SPEAK_QUESTIONS, PARTS } from './content/exam.js';
+import { currentExam, updatePart, weightedPart, ensureParts } from './readiness.js';
 
 // ---------- Nivel (modelo tipo Elo / Rasch simplificado) ----------
 // Un ítem de nivel L lo acierta ~60 % alguien con habilidad θ = L.
@@ -31,7 +33,7 @@ const GOAL_TOPICS = {
   general: {},
 };
 const INTEREST_TOPICS = {
-  music: ['music', 'feelings'], jobs: ['jobs', 'work'], tech: ['tech'],
+  jobs: ['jobs', 'work'], tech: ['tech'],
   travel: ['travel'], daily: ['daily', 'feelings'],
 };
 
@@ -272,6 +274,7 @@ function weakestSkill() {
 }
 
 export function buildDailyLesson() {
+  if (currentExam()) return buildExamDaily();
   const s = get();
   const size = SIZE[s.profile?.minutes] || 12;
   const used = new Set();
@@ -356,6 +359,8 @@ export function buildMistakesLesson() {
   for (const id of shuffle(wrong).slice(0, 10)) {
     const g = GRAMMAR.find((x) => x.id === id);
     if (g) { out.push(grammarExercise(g)); continue; }
+    const k = UOE4.find((x) => x.id === id);
+    if (k) { out.push(kwtExercise(k)); continue; }
     const [sid, suffix] = id.split('#');
     const sn = SENTENCES.find((x) => x.id === sid);
     if (!sn || used.has(sid)) continue;
@@ -370,20 +375,130 @@ export function buildMistakesLesson() {
 }
 
 export function mistakesCount() {
-  return Object.values(get().items).filter((st) => st.ok < st.seen && st.lastWrong).length;
+  return Object.entries(get().items)
+    .filter(([id, st]) => st.ok < st.seen && st.lastWrong && /^(g_|s_|u4_)/.test(id)).length;
+}
+
+// ---------- Ejercicios con formato de examen ----------
+// Elige ítems priorizando los no vistos y los fallados, y luego los más antiguos.
+function pickFresh(pool, n, statId = (x) => x.id) {
+  const s = get();
+  const score = (x) => {
+    const st = s.items[statId(x)];
+    if (!st) return 3 + Math.random();
+    if (st.lastWrong) return 2 + Math.random();
+    return Math.random() * (st.last === today() ? 0.1 : 1);
+  };
+  return pool.map((x) => ({ x, w: score(x) })).sort((a, b) => b.w - a.w).slice(0, n).map((o) => o.x);
+}
+
+const CLOZE_POOL = { uoe1: UOE1, uoe2: UOE2, uoe3: UOE3 };
+const CLOZE_MODE = { uoe1: 'mc', uoe2: 'open', uoe3: 'wf' };
+
+function clozeExercise(part, gapsToAsk) {
+  const exam = currentExam();
+  const pool = CLOZE_POOL[part].filter((t) => t.exam === exam.id);
+  const s = get();
+  // El texto con más huecos sin ver o fallados
+  const [t] = pickFresh(pool, 1, (x) => {
+    const ids = x.gaps.map((_, i) => `${x.id}#${i}`);
+    const pend = ids.find((id) => !s.items[id] || s.items[id].lastWrong);
+    return pend || ids[0];
+  });
+  if (!t) return null;
+  let active = t.gaps.map((_, i) => i);
+  if (gapsToAsk && gapsToAsk < active.length) {
+    const pref = active.filter((i) => !s.items[`${t.id}#${i}`] || s.items[`${t.id}#${i}`].lastWrong);
+    active = shuffle(pref.length >= gapsToAsk ? pref : active).slice(0, gapsToAsk).sort((a, b) => a - b);
+  }
+  return { kind: 'cloze', mode: CLOZE_MODE[part], part, skill: PARTS[part].skill, lvl: t.lvl,
+    itemId: t.id, title: t.title, text: t.text, gaps: t.gaps, active, badge: `${PARTS[part].name} · ${PARTS[part].short}` };
+}
+
+export function kwtExercise(k) {
+  return { kind: 'kwt', part: 'uoe4', skill: 'grammar', lvl: k.lvl, itemId: k.id, ...k,
+    badge: `${PARTS.uoe4.name} · ${PARTS.uoe4.short}`, solution: `${k.before} ${k.answers[0]} ${k.after}` };
+}
+
+function examListenExercise(l) {
+  return { kind: 'choice', part: 'listen', skill: 'listening', lvl: l.lvl, itemId: l.id,
+    badge: `Listening · ${currentExam().name}`, audio: l.script, autoplay: true, audioOnly: true,
+    prompt: l.q, ...choice(l.options[0], l.options.slice(1)), canSkip: 'audio',
+    solution: l.options[0], explain: 'Transcripción: ' + l.script };
+}
+
+function speakFreeExercise(q) {
+  return { kind: 'speakfree', part: 'speak', skill: 'speaking', lvl: q.lvl, itemId: q.id,
+    badge: 'Speaking · Part 1', question: q.q, canSkip: 'mic' };
+}
+
+function examReading() {
+  const exam = currentExam();
+  const pool = READING.filter((r) => r.lvl >= exam.lvl - 1);
+  const [r] = pickFresh(pool, 1);
+  return r ? { ...readingExercise(r), part: 'read', lvl: Math.max(r.lvl, exam.lvl - 0.5) } : null;
+}
+
+function forExam(pool) { const id = currentExam().id; return pool.filter((x) => x.exam === id); }
+
+function buildExamDaily() {
+  ensureParts();
+  const s = get();
+  const size = SIZE[s.profile?.minutes] || 12;
+  const long = size >= 12;
+  const due = dueWords().slice(0, long ? 2 : 1);
+  const fresh = newWords(1);
+  const out = [...fresh.map((w) => vocabExercise(w, true)), ...due.map((w) => vocabExercise(w, false))];
+
+  const cloze = clozeExercise(weightedPart(['uoe1', 'uoe2', 'uoe3']), long ? 4 : 3);
+  if (cloze) out.push(cloze);
+  const kwts = pickFresh(forExam(UOE4), long ? 2 : 1).map(kwtExercise);
+  out.push(kwts[0]);
+  out.push(...pickFresh(forExam(LISTEN), long ? 2 : 1).map(examListenExercise));
+  if (long) { const r = examReading(); if (r) out.push(r); }
+  else out.push(...sentenceExercises('reading', 1, new Set()));
+  if (kwts[1]) out.push(kwts[1]);
+  out.push(...pickFresh(forExam(SPEAK_QUESTIONS), 1).map(speakFreeExercise));
+  if (size >= 15) {
+    // Refuerzo extra en la parte que más nota te puede dar
+    const extra = weightedPart(['uoe1', 'uoe2', 'uoe3', 'uoe4', 'listen']);
+    if (extra === 'uoe4') out.push(...pickFresh(forExam(UOE4), 2).map(kwtExercise));
+    else if (extra === 'listen') out.push(...pickFresh(forExam(LISTEN), 2).map(examListenExercise));
+    else { const c = clozeExercise(extra, 4); if (c) out.push(c); }
+    out.push(...sentenceExercises('speaking', 1, new Set()));
+  }
+  return out.filter(Boolean);
+}
+
+export function buildPartLesson(part) {
+  ensureParts();
+  if (CLOZE_POOL[part]) return [clozeExercise(part)].filter(Boolean);
+  if (part === 'uoe4') return pickFresh(forExam(UOE4), 6).map(kwtExercise);
+  if (part === 'listen') return pickFresh(forExam(LISTEN), 6).map(examListenExercise);
+  if (part === 'speak') return [...pickFresh(forExam(SPEAK_QUESTIONS), 3).map(speakFreeExercise), ...sentenceExercises('speaking', 2, new Set())];
+  if (part === 'read') {
+    const a = examReading();
+    const rest = READING.filter((r) => r.id !== a?.itemId && r.lvl >= currentExam().lvl - 1);
+    const [b] = pickFresh(rest, 1);
+    return [a, b && { ...readingExercise(b), part: 'read', lvl: Math.max(b.lvl, currentExam().lvl - 0.5) }].filter(Boolean);
+  }
+  return [];
 }
 
 // ---------- Registrar resultados ----------
-export function applyResult(ex, ok, { lvl } = {}) {
+export function applyResult(ex, ok, { lvl, itemId } = {}) {
   const s = get();
-  updateAbility(ex.skill, lvl ?? ex.lvl, ok);
-  if (ex.itemId) {
-    const st = s.items[ex.itemId] || { seen: 0, ok: 0, last: null, lastWrong: false };
+  const L = lvl ?? ex.lvl;
+  updateAbility(ex.skill, L, ok);
+  if (ex.part) updatePart(ex.part, L, ok);
+  const id = itemId ?? ex.itemId;
+  if (id) {
+    const st = s.items[id] || { seen: 0, ok: 0, last: null, lastWrong: false };
     st.seen += 1;
     if (ok) st.ok += 1;
     st.last = today();
     st.lastWrong = !ok;
-    s.items[ex.itemId] = st;
+    s.items[id] = st;
   }
   if (ex.wordId) updateSrs(ex.wordId, ok);
   save();
